@@ -1,21 +1,23 @@
+
+
 import queue
 import threading
 from collections import deque
 from typing import Optional
- 
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import dash
 from dash import dcc, html, Input, Output, callback
- 
+
 # How many readings to keep in memory for the live ring buffer
 RING_BUFFER_SIZE = 3600  # ~1 hour at 1 Hz
- 
+
 # Columns we expect from the iMet-X4
 REQUIRED_COLS = ["timestamp", "temperature", "humidity", "pressure"]
 OPTIONAL_COLS = ["latitude", "longitude", "altitude", "wind_speed", "wind_direction"]
- 
+
 _COLORS = {
     "temperature":     "#E8593C",
     "humidity":        "#3B8BD4",
@@ -28,7 +30,7 @@ _COLORS = {
     "text_primary":    "#e8e6df",
     "text_secondary":  "#8a8880",
 }
- 
+
 _PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
@@ -50,8 +52,8 @@ _PLOTLY_LAYOUT = dict(
         showgrid=True,
     ),
 )
- 
- 
+
+
 def _make_stat_card(label: str, value: str, unit: str, color: str) -> html.Div:
     return html.Div(
         style={
@@ -76,12 +78,12 @@ def _make_stat_card(label: str, value: str, unit: str, color: str) -> html.Div:
             ),
         ],
     )
- 
- 
+
+
 class Dashboard:
     """
     Real-time + post-flight dashboard for iMet-X4 data.
- 
+
     Parameters
     ----------
     dataframe : pd.DataFrame, optional
@@ -95,7 +97,7 @@ class Dashboard:
     refresh_interval : int
         Dashboard refresh interval in milliseconds (default 1000).
     """
- 
+
     def __init__(
         self,
         dataframe: Optional[pd.DataFrame] = None,
@@ -105,20 +107,20 @@ class Dashboard:
     ):
         if dataframe is None and data_queue is None:
             raise ValueError("Provide either dataframe= or data_queue=.")
- 
+
         self.port = port
         self.refresh_interval = refresh_interval
         self._queue = data_queue
         self._live = data_queue is not None
- 
+
         # Internal ring buffer for live mode
         self._buffer: deque = deque(maxlen=RING_BUFFER_SIZE)
- 
+
         if dataframe is not None:
             self._validate_df(dataframe)
             for _, row in dataframe.iterrows():
                 self._buffer.append(row.to_dict())
- 
+
         self.app = dash.Dash(
             __name__,
             title="iMet-X4 Dashboard",
@@ -126,11 +128,11 @@ class Dashboard:
         )
         self._build_layout()
         self._register_callbacks()
- 
+
     # ------------------------------------------------------------------ #
     #  Layout                                                              #
     # ------------------------------------------------------------------ #
- 
+
     def _build_layout(self):
         self.app.layout = html.Div(
             style={"minHeight": "100vh", "background": _COLORS["background"],
@@ -155,7 +157,7 @@ class Dashboard:
                                  style={"fontSize": "12px", "color": _COLORS["text_secondary"]}),
                     ],
                 ),
- 
+
                 # Stat cards row
                 html.Div(
                     id="stat-cards",
@@ -168,7 +170,7 @@ class Dashboard:
                         _make_stat_card("Wind Speed",  "—", "m/s",_COLORS["wind_speed"]),
                     ],
                 ),
- 
+
                 # Main plots grid
                 html.Div(
                     style={"display": "grid",
@@ -182,7 +184,7 @@ class Dashboard:
                         self._panel("Pressure",            dcc.Graph(id="graph-pressure",   config={"displayModeBar": False})),
                     ],
                 ),
- 
+
                 # Refresh trigger
                 dcc.Interval(
                     id="interval",
@@ -192,7 +194,7 @@ class Dashboard:
                 ),
             ],
         )
- 
+
     @staticmethod
     def _panel(title: str, child) -> html.Div:
         return html.Div(
@@ -208,13 +210,13 @@ class Dashboard:
                 child,
             ],
         )
- 
+
     # ------------------------------------------------------------------ #
     #  Callbacks                                                           #
     # ------------------------------------------------------------------ #
- 
+
     def _register_callbacks(self):
- 
+
         @self.app.callback(
             Output("graph-th",       "figure"),
             Output("graph-pressure", "figure"),
@@ -232,16 +234,16 @@ class Dashboard:
                         self._buffer.append(item)
                     except queue.Empty:
                         break
- 
+
             if not self._buffer:
                 empty = go.Figure()
                 empty.update_layout(**_PLOTLY_LAYOUT)
                 return empty, empty, empty, empty, "No data yet"
- 
+
             df = pd.DataFrame(list(self._buffer))
- 
+
             ts = df.get("timestamp", pd.Series(range(len(df))))
- 
+
             # — Temperature & Humidity —
             fig_th = make_subplots(specs=[[{"secondary_y": True}]])
             fig_th.add_trace(go.Scatter(
@@ -256,7 +258,7 @@ class Dashboard:
             fig_th.update_yaxes(title_text="°C",  secondary_y=False,
                                 gridcolor=_COLORS["border"], zerolinecolor=_COLORS["border"])
             fig_th.update_yaxes(title_text="%", secondary_y=True, showgrid=False)
- 
+
             # — Pressure —
             fig_p = go.Figure(go.Scatter(
                 x=ts, y=df.get("pressure"),
@@ -265,7 +267,7 @@ class Dashboard:
                 name="Pressure (hPa)",
             ))
             fig_p.update_layout(**_PLOTLY_LAYOUT, height=240)
- 
+
             # — Atmospheric profile (altitude vs temperature) —
             fig_prof = go.Figure(go.Scatter(
                 x=df.get("temperature"), y=df.get("altitude"),
@@ -279,7 +281,7 @@ class Dashboard:
             fig_prof.update_layout(**_PLOTLY_LAYOUT, height=240,
                                    xaxis_title="Temperature (°C)",
                                    yaxis_title="Altitude (m)")
- 
+
             # — Wind (speed time-series + direction overlay) —
             fig_wind = make_subplots(specs=[[{"secondary_y": True}]])
             if "wind_speed" in df.columns:
@@ -297,11 +299,11 @@ class Dashboard:
             fig_wind.update_yaxes(title_text="m/s", secondary_y=False,
                                   gridcolor=_COLORS["border"], zerolinecolor=_COLORS["border"])
             fig_wind.update_yaxes(title_text="°", secondary_y=True, range=[0, 360], showgrid=False)
- 
+
             last = df.iloc[-1]
             timestamp_str = str(last.get("timestamp", ""))
             return fig_th, fig_p, fig_prof, fig_wind, f"Last update: {timestamp_str}"
- 
+
         # Live stat card values
         @self.app.callback(
             Output("stat-temperature", "children"),
@@ -320,18 +322,20 @@ class Dashboard:
                 return f"{v:.{decimals}f}" if v is not None else "—"
             return fmt("temperature"), fmt("humidity", 0), fmt("pressure", 1), \
                    fmt("altitude", 0), fmt("wind_speed")
- 
+
     # ------------------------------------------------------------------ #
     #  Run                                                                 #
     # ------------------------------------------------------------------ #
- 
+
     def run(self, debug: bool = False, open_browser: bool = True):
         """Start the Dash server. Blocking call."""
         if open_browser:
             import webbrowser, threading
-            threading.Timer(1.2, lambda: webbrowser.open(f"http://localhost:{self.port}")).start()
-        self.app.run(debug=debug, port=self.port, use_reloader=False)
- 
+            threading.Timer(1.5, lambda: webbrowser.open_new(f"http://localhost:{self.port}")).start()
+        print(f"\n  iMet-X4 Dashboard running → http://localhost:{self.port}")
+        print("  Press Ctrl+C to stop.\n")
+        self.app.run(debug=debug, port=self.port, use_reloader=False, host="127.0.0.1")
+
     @staticmethod
     def _validate_df(df: pd.DataFrame):
         missing = [c for c in REQUIRED_COLS if c not in df.columns]

@@ -1,0 +1,12 @@
+# Core data
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+
+# Visualization
+matplotlib>=3.7
+plotly>=5.18
+dash>=2.14
+
+# Serial ingestion (for live mode)
+pyserial>=3.5

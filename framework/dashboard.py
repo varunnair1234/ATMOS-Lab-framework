@@ -3,6 +3,7 @@
 import queue
 import threading
 from collections import deque
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -215,6 +216,77 @@ class Dashboard:
     #  Callbacks                                                           #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _build_figures(df: pd.DataFrame):
+        """Build the four Plotly figures (T&H, pressure, profile, wind) from a DataFrame."""
+        ts = df.get("timestamp", pd.Series(range(len(df))))
+
+        # — Temperature & Humidity —
+        fig_th = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_th.add_trace(go.Scatter(
+            x=ts, y=df.get("temperature"),
+            name="Temperature (°C)", line=dict(color=_COLORS["temperature"], width=1.5),
+        ), secondary_y=False)
+        fig_th.add_trace(go.Scatter(
+            x=ts, y=df.get("humidity"),
+            name="Humidity (%)", line=dict(color=_COLORS["humidity"], width=1.5, dash="dot"),
+        ), secondary_y=True)
+        fig_th.update_layout(**_PLOTLY_LAYOUT, height=240)
+        fig_th.update_yaxes(title_text="°C",  secondary_y=False,
+                            gridcolor=_COLORS["border"], zerolinecolor=_COLORS["border"])
+        fig_th.update_yaxes(title_text="%", secondary_y=True, showgrid=False)
+
+        # — Pressure —
+        fig_p = go.Figure(go.Scatter(
+            x=ts, y=df.get("pressure"),
+            fill="tozeroy", fillcolor="rgba(29,158,117,0.08)",
+            line=dict(color=_COLORS["pressure"], width=1.5),
+            name="Pressure (hPa)",
+        ))
+        fig_p.update_layout(**_PLOTLY_LAYOUT, height=240)
+
+        # — Atmospheric profile (altitude vs temperature) —
+        fig_prof = go.Figure(go.Scatter(
+            x=df.get("temperature"), y=df.get("altitude"),
+            mode="lines+markers",
+            marker=dict(size=3, color=df.get("temperature"),
+                        colorscale=[[0, _COLORS["humidity"]], [1, _COLORS["temperature"]]],
+                        showscale=False),
+            line=dict(color=_COLORS["temperature"], width=1),
+            name="T profile",
+        ))
+        fig_prof.update_layout(**_PLOTLY_LAYOUT, height=240,
+                               xaxis_title="Temperature (°C)",
+                               yaxis_title="Altitude (m)")
+
+        # — Wind (speed time-series + direction overlay) —
+        fig_wind = make_subplots(specs=[[{"secondary_y": True}]])
+        if "wind_speed" in df.columns:
+            fig_wind.add_trace(go.Scatter(
+                x=ts, y=df["wind_speed"],
+                name="Speed (m/s)", line=dict(color=_COLORS["wind_speed"], width=1.5),
+            ), secondary_y=False)
+        if "wind_direction" in df.columns:
+            fig_wind.add_trace(go.Scatter(
+                x=ts, y=df["wind_direction"],
+                name="Direction (°)", mode="markers",
+                marker=dict(size=3, color=_COLORS["text_secondary"]),
+            ), secondary_y=True)
+        fig_wind.update_layout(**_PLOTLY_LAYOUT, height=240)
+        fig_wind.update_yaxes(title_text="m/s", secondary_y=False,
+                              gridcolor=_COLORS["border"], zerolinecolor=_COLORS["border"])
+        fig_wind.update_yaxes(title_text="°", secondary_y=True, range=[0, 360], showgrid=False)
+
+        return fig_th, fig_p, fig_prof, fig_wind
+
+    @staticmethod
+    def _build_stat_values(last: dict):
+        def fmt(key, decimals=1):
+            v = last.get(key)
+            return f"{v:.{decimals}f}" if v is not None else "—"
+        return fmt("temperature"), fmt("humidity", 0), fmt("pressure", 1), \
+               fmt("altitude", 0), fmt("wind_speed")
+
     def _register_callbacks(self):
 
         @self.app.callback(
@@ -241,64 +313,7 @@ class Dashboard:
                 return empty, empty, empty, empty, "No data yet"
 
             df = pd.DataFrame(list(self._buffer))
-
-            ts = df.get("timestamp", pd.Series(range(len(df))))
-
-            # — Temperature & Humidity —
-            fig_th = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_th.add_trace(go.Scatter(
-                x=ts, y=df.get("temperature"),
-                name="Temperature (°C)", line=dict(color=_COLORS["temperature"], width=1.5),
-            ), secondary_y=False)
-            fig_th.add_trace(go.Scatter(
-                x=ts, y=df.get("humidity"),
-                name="Humidity (%)", line=dict(color=_COLORS["humidity"], width=1.5, dash="dot"),
-            ), secondary_y=True)
-            fig_th.update_layout(**_PLOTLY_LAYOUT, height=240)
-            fig_th.update_yaxes(title_text="°C",  secondary_y=False,
-                                gridcolor=_COLORS["border"], zerolinecolor=_COLORS["border"])
-            fig_th.update_yaxes(title_text="%", secondary_y=True, showgrid=False)
-
-            # — Pressure —
-            fig_p = go.Figure(go.Scatter(
-                x=ts, y=df.get("pressure"),
-                fill="tozeroy", fillcolor="rgba(29,158,117,0.08)",
-                line=dict(color=_COLORS["pressure"], width=1.5),
-                name="Pressure (hPa)",
-            ))
-            fig_p.update_layout(**_PLOTLY_LAYOUT, height=240)
-
-            # — Atmospheric profile (altitude vs temperature) —
-            fig_prof = go.Figure(go.Scatter(
-                x=df.get("temperature"), y=df.get("altitude"),
-                mode="lines+markers",
-                marker=dict(size=3, color=df.get("temperature"),
-                            colorscale=[[0, _COLORS["humidity"]], [1, _COLORS["temperature"]]],
-                            showscale=False),
-                line=dict(color=_COLORS["temperature"], width=1),
-                name="T profile",
-            ))
-            fig_prof.update_layout(**_PLOTLY_LAYOUT, height=240,
-                                   xaxis_title="Temperature (°C)",
-                                   yaxis_title="Altitude (m)")
-
-            # — Wind (speed time-series + direction overlay) —
-            fig_wind = make_subplots(specs=[[{"secondary_y": True}]])
-            if "wind_speed" in df.columns:
-                fig_wind.add_trace(go.Scatter(
-                    x=ts, y=df["wind_speed"],
-                    name="Speed (m/s)", line=dict(color=_COLORS["wind_speed"], width=1.5),
-                ), secondary_y=False)
-            if "wind_direction" in df.columns:
-                fig_wind.add_trace(go.Scatter(
-                    x=ts, y=df["wind_direction"],
-                    name="Direction (°)", mode="markers",
-                    marker=dict(size=3, color=_COLORS["text_secondary"]),
-                ), secondary_y=True)
-            fig_wind.update_layout(**_PLOTLY_LAYOUT, height=240)
-            fig_wind.update_yaxes(title_text="m/s", secondary_y=False,
-                                  gridcolor=_COLORS["border"], zerolinecolor=_COLORS["border"])
-            fig_wind.update_yaxes(title_text="°", secondary_y=True, range=[0, 360], showgrid=False)
+            fig_th, fig_p, fig_prof, fig_wind = self._build_figures(df)
 
             last = df.iloc[-1]
             timestamp_str = str(last.get("timestamp", ""))
@@ -316,12 +331,7 @@ class Dashboard:
         def update_stats(_n):
             if not self._buffer:
                 return "—", "—", "—", "—", "—"
-            last = self._buffer[-1]
-            def fmt(key, decimals=1):
-                v = last.get(key)
-                return f"{v:.{decimals}f}" if v is not None else "—"
-            return fmt("temperature"), fmt("humidity", 0), fmt("pressure", 1), \
-                   fmt("altitude", 0), fmt("wind_speed")
+            return self._build_stat_values(self._buffer[-1])
 
     # ------------------------------------------------------------------ #
     #  Run                                                                 #
@@ -335,6 +345,90 @@ class Dashboard:
         print(f"\n  iMet-X4 Dashboard running → http://localhost:{self.port}")
         print("  Press Ctrl+C to stop.\n")
         self.app.run(debug=debug, port=self.port, use_reloader=False, host="127.0.0.1")
+
+    def export_static_html(self, path: str):
+        """
+        Render the current buffer as a single self-contained static HTML file
+        (interactive Plotly charts, no live server). Used to publish a
+        post-flight snapshot to GitHub Pages, since Pages can't run the
+        live Dash server.
+        """
+        import plotly.io as pio
+
+        if not self._buffer:
+            raise ValueError("No data to export — buffer is empty.")
+
+        df = pd.DataFrame(list(self._buffer))
+        fig_th, fig_p, fig_prof, fig_wind = self._build_figures(df)
+        stat_values = self._build_stat_values(df.iloc[-1].to_dict())
+        stat_labels = [
+            ("Temperature", "°C"), ("Humidity", "%"), ("Pressure", "hPa"),
+            ("Altitude", "m"), ("Wind Speed", "m/s"),
+        ]
+        stat_colors = [_COLORS["temperature"], _COLORS["humidity"], _COLORS["pressure"],
+                       _COLORS["altitude"], _COLORS["wind_speed"]]
+
+        graphs_html = [
+            pio.to_html(fig, full_html=False, include_plotlyjs="cdn", config={"displayModeBar": False})
+            for fig in (fig_th, fig_p, fig_prof, fig_wind)
+        ]
+
+        stat_cards_html = "".join(
+            f'''<div class="stat-card" style="border-left-color:{color}">
+                    <p class="stat-label">{label}</p>
+                    <div><span class="stat-value" style="color:{color}">{value}</span>
+                    <span class="stat-unit">{unit}</span></div>
+                </div>'''
+            for (label, unit), value, color in zip(stat_labels, stat_values, stat_colors)
+        )
+
+        timestamp_str = str(df.iloc[-1].get("timestamp", ""))
+
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iMet-X4 Dashboard (snapshot)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body {{ min-height: 100vh; background: {_COLORS['background']}; color: {_COLORS['text_primary']};
+         font-family: system-ui, sans-serif; padding: 20px 24px; margin: 0; }}
+  .header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }}
+  .header h1 {{ margin: 0; font-size: 20px; font-weight: 500; }}
+  .header p {{ margin: 2px 0 0; font-size: 12px; color: {_COLORS['text_secondary']}; }}
+  .stat-cards {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }}
+  .stat-card {{ background: {_COLORS['panel']}; border: 1px solid {_COLORS['border']};
+               border-left: 3px solid; border-radius: 8px; padding: 14px 18px; flex: 1; min-width: 140px; }}
+  .stat-label {{ margin: 0 0 4px; font-size: 11px; color: {_COLORS['text_secondary']}; letter-spacing: 0.06em; }}
+  .stat-value {{ font-size: 24px; font-weight: 600; }}
+  .stat-unit {{ font-size: 13px; color: {_COLORS['text_secondary']}; margin-left: 4px; }}
+  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+  .panel {{ background: {_COLORS['panel']}; border: 1px solid {_COLORS['border']}; border-radius: 10px; padding: 16px; }}
+  .panel p {{ margin: 0 0 10px; font-size: 13px; color: {_COLORS['text_secondary']}; font-weight: 500; }}
+  @media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>iMet-X4 Monitor</h1>
+      <p>Post-flight snapshot &middot; last update: {timestamp_str}</p>
+    </div>
+  </div>
+  <div class="stat-cards">{stat_cards_html}</div>
+  <div class="grid">
+    <div class="panel"><p>Temperature &amp; Humidity</p>{graphs_html[0]}</div>
+    <div class="panel"><p>Pressure</p>{graphs_html[1]}</div>
+    <div class="panel"><p>Atmospheric Profile</p>{graphs_html[2]}</div>
+    <div class="panel"><p>Wind</p>{graphs_html[3]}</div>
+  </div>
+</body>
+</html>
+"""
+        out_path = Path(path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(html, encoding="utf-8")
+        print(f"Static dashboard written -> {out_path.resolve()}")
 
     @staticmethod
     def _validate_df(df: pd.DataFrame):

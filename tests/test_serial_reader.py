@@ -81,7 +81,7 @@ def test_parses_known_values():
 def test_dashboard_adapter_prefers_external_sensors():
     reader = build_reader()
     parsed = reader.parse_line(SAMPLE_LINE)
-    item = reader._to_dashboard_item(parsed)
+    item = reader.to_canonical_row(parsed)
 
     # only j8 has a valid (non-9999) temperature reading
     assert item["temperature"] == 23.98

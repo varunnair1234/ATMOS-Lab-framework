@@ -297,7 +297,7 @@ class IMetX4SerialReader:
             if on_reading is not None:
                 on_reading(reading)
             if self.data_queue is not None:
-                self.data_queue.put(self._to_dashboard_item(reading))
+                self.data_queue.put(self.to_canonical_row(reading))
 
     def stop(self):
         self._running = False
@@ -312,12 +312,15 @@ class IMetX4SerialReader:
             return None
         return value
 
-    def _to_dashboard_item(self, r: dict) -> dict:
+    def to_canonical_row(self, r: dict) -> dict:
         """Reduce a fully-parsed reading down to the simple keys
         framework.dashboard.Dashboard expects (see its REQUIRED_COLS /
         OPTIONAL_COLS). External J4/J5/J8/J9 sensors are preferred over the
         onboard board sensor for temperature/humidity, since the manual
         states the onboard humidity sensor is for board health only.
+
+        This is also the schema framework.flight_log.FlightLogger writes
+        for the canonical (plot/stats-ready) CSV of a live session.
         """
         date, utc_time = r.get("date"), r.get("utc_time")
         timestamp = None

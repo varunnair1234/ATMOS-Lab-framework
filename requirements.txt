@@ -10,3 +10,6 @@ dash>=2.14
 
 # Serial ingestion (for live mode)
 pyserial>=3.5
+
+# Testing
+pytest>=7.0

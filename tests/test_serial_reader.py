@@ -8,6 +8,11 @@ and configuration captured from the user's iMet-X4 (serial 905302):
   - J8, J9: temperature sensors
 """
 
+import threading
+from unittest.mock import MagicMock, patch
+
+import serial
+
 from framework.serial_reader import IMetX4SerialReader
 
 SAMPLE_LINE = (
@@ -92,8 +97,45 @@ def test_dashboard_adapter_prefers_external_sensors():
     assert item["altitude"] is None
 
 
+def _fast_reader() -> IMetX4SerialReader:
+    return IMetX4SerialReader(
+        port="COM_TEST", reconnect_initial_delay=0.01, reconnect_max_delay=0.02
+    )
+
+
+def test_reconnect_retries_then_succeeds():
+    reader = _fast_reader()
+    reader._ser = MagicMock()  # pretend a connection existed before it dropped
+
+    good_serial = MagicMock()
+    with patch("framework.serial_reader.serial.Serial",
+               side_effect=[serial.SerialException("gone"), serial.SerialException("gone"), good_serial]) as mock_serial, \
+         patch("framework.serial_reader.find_imet_x4_port", return_value=None):
+        reader._reconnect()
+
+    assert reader._ser is good_serial
+    assert mock_serial.call_count == 3
+
+
+def test_reconnect_stops_promptly_when_stop_is_called():
+    reader = _fast_reader()
+
+    with patch("framework.serial_reader.serial.Serial",
+               side_effect=serial.SerialException("gone")), \
+         patch("framework.serial_reader.find_imet_x4_port", return_value=None):
+        t = threading.Thread(target=reader._reconnect)
+        t.start()
+        reader.stop()
+        t.join(timeout=1.0)
+
+    assert not t.is_alive()  # returned promptly instead of waiting out the full backoff
+    assert reader._ser is None  # never succeeded
+
+
 if __name__ == "__main__":
     test_field_count_matches_sample_line()
     test_parses_known_values()
     test_dashboard_adapter_prefers_external_sensors()
+    test_reconnect_retries_then_succeeds()
+    test_reconnect_stops_promptly_when_stop_is_called()
     print("All tests passed.")

@@ -37,6 +37,11 @@ Every session is logged to `flights/` as it runs:
 When you stop a session (Ctrl+C), it prints both file paths and the exact
 command to turn that flight into a full report (see below).
 
+If the serial link drops mid-session (USB hiccup, radio dropout), it
+reconnects automatically with backoff (retrying the same COM port, falling
+back to re-detecting the device if Windows reassigns a different one) and
+keeps appending to the same log files rather than ending the session.
+
 ### 2. Post-flight report — `quickstart.py`
 
 Runs the full stats + time-series pipeline (histograms, correlation

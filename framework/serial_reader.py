@@ -23,6 +23,7 @@ keeps parsing correct regardless of which sensors are plugged in.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -32,6 +33,11 @@ import serial
 from serial.tools import list_ports
 
 DEFAULT_BAUD = 115200
+
+# Backoff for reconnecting after the serial link drops mid-session (a USB
+# hiccup or radio dropout, not the initial connect -- see IMetX4SerialReader.start).
+RECONNECT_INITIAL_DELAY_S = 1.0
+RECONNECT_MAX_DELAY_S = 15.0
 
 # --------------------------------------------------------------------------- #
 #  Board data columns (manual section 4.2, Table "Data Field")
@@ -144,15 +150,19 @@ class IMetX4SerialReader:
     """
 
     def __init__(self, port: str, baud: int = DEFAULT_BAUD, data_queue=None,
-                 read_timeout: float = 1.0):
+                 read_timeout: float = 1.0,
+                 reconnect_initial_delay: float = RECONNECT_INITIAL_DELAY_S,
+                 reconnect_max_delay: float = RECONNECT_MAX_DELAY_S):
         self.port_name = port
         self.baud = baud
         self.data_queue = data_queue
         self.read_timeout = read_timeout
+        self.reconnect_initial_delay = reconnect_initial_delay
+        self.reconnect_max_delay = reconnect_max_delay
         self._ser: Optional[serial.Serial] = None
         self.schema: Optional[PacketSchema] = None
         self.latest: Optional[dict] = None
-        self._running = False
+        self._stop_event = threading.Event()
 
     # -- connection -------------------------------------------------------- #
 
@@ -161,9 +171,49 @@ class IMetX4SerialReader:
         return self
 
     def close(self):
-        self._running = False
+        self.stop()
         if self._ser is not None:
-            self._ser.close()
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+
+    def stop(self):
+        self._stop_event.set()
+
+    def _reconnect(self):
+        """Keep retrying to reopen the serial connection (exponential
+        backoff, uncapped attempts) after the link drops mid-session --
+        a USB hiccup or radio dropout, not the initial connect. The
+        packet schema and any FlightLogger session stay exactly as they
+        were; only the port handle is reopened, so an in-progress flight
+        log isn't fragmented by a brief glitch.
+        """
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+
+        delay = self.reconnect_initial_delay
+        attempt = 0
+        while not self._stop_event.is_set():
+            attempt += 1
+            try:
+                self._ser = serial.Serial(self.port_name, self.baud, timeout=self.read_timeout)
+                print(f"[iMet-X4] Reconnected to {self.port_name} after {attempt} attempt(s).")
+                return
+            except (serial.SerialException, OSError):
+                # Windows can reassign a different COM number when the
+                # FTDI device re-enumerates; fall back to re-detecting it.
+                fallback = find_imet_x4_port()
+                if fallback and fallback != self.port_name:
+                    print(f"[iMet-X4] {self.port_name} not available; trying {fallback} instead.")
+                    self.port_name = fallback
+                print(f"[iMet-X4] Connection lost. Retry {attempt} in {delay:.0f}s...")
+                if self._stop_event.wait(delay):
+                    return  # stop() was called while waiting
+                delay = min(delay * 2, self.reconnect_max_delay)
 
     # -- configuration polling --------------------------------------------- #
 
@@ -278,12 +328,19 @@ class IMetX4SerialReader:
 
     def start(self, on_reading: Optional[Callable[[dict], None]] = None):
         """Blocking read loop. Parses each line and, if configured, pushes a
-        Dashboard-ready reading onto self.data_queue."""
+        Dashboard-ready reading onto self.data_queue. If the serial link
+        drops mid-session, reconnects automatically (see _reconnect) and
+        keeps going rather than ending the session."""
         if self.schema is None:
             self.fetch_configuration()
-        self._running = True
-        while self._running:
-            raw = self._ser.readline()
+        self._stop_event.clear()
+        while not self._stop_event.is_set():
+            try:
+                raw = self._ser.readline()
+            except (serial.SerialException, OSError):
+                print("[iMet-X4] Serial connection dropped.")
+                self._reconnect()
+                continue
             if not raw:
                 continue
             line = raw.decode("ascii", errors="replace").strip()
@@ -292,15 +349,12 @@ class IMetX4SerialReader:
             try:
                 reading = self.parse_line(line)
             except ValueError:
-                continue  # partial line (e.g. right after connecting)
+                continue  # partial line (e.g. right after connecting/reconnecting)
             self.latest = reading
             if on_reading is not None:
                 on_reading(reading)
             if self.data_queue is not None:
                 self.data_queue.put(self.to_canonical_row(reading))
-
-    def stop(self):
-        self._running = False
 
     # -- Dashboard adapter ---------------------------------------------------- #
 

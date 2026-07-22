@@ -1,0 +1,195 @@
+:root {
+  --bg: #0f1117;
+  --panel: #1a1d27;
+  --border: #2a2d3a;
+  --text-primary: #e8e6df;
+  --text-secondary: #8a8880;
+  --temperature: #E8593C;
+  --humidity: #3B8BD4;
+  --pressure: #1D9E75;
+  --wind-speed: #BA7517;
+  --altitude: #7F77DD;
+  --live: #1D9E75;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: system-ui, sans-serif;
+}
+
+#root {
+  min-height: 100vh;
+  padding: 20px 24px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.live-indicator {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--live);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.last-update {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tabs button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tabs button.active {
+  color: var(--text-primary);
+  border-color: var(--temperature);
+}
+
+.stat-cards {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid;
+  border-radius: 8px;
+  padding: 14px 18px;
+  flex: 1;
+  min-width: 140px;
+}
+
+.stat-label {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.06em;
+}
+
+.stat-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.stat-unit {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.panel p.panel-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.panel img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+}
+
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 20px;
+}
+
+.summary-table th, .summary-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: right;
+}
+
+.summary-table th:first-child, .summary-table td:first-child {
+  text-align: left;
+  color: var(--text-secondary);
+}
+
+.summary-table th {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.variable-select {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.loading, .error-message {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 40px 0;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

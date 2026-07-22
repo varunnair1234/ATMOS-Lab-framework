@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from . import state
 from .routers import analysis, dashboard
@@ -42,3 +43,13 @@ app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# Serve the built React app (frontend/dist), when present, for single-service
+# deployments. In local dev (no build), the frontend runs separately via
+# `npm run dev` and this mount is skipped.
+_frontend_dist = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+)
+if os.path.isdir(_frontend_dist):
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")

@@ -188,6 +188,39 @@ body {
   text-align: center;
 }
 
+.device-waiting {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 60px 24px;
+  text-align: center;
+}
+
+.device-waiting-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.device-waiting-detail {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.device-waiting-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.device-waiting-hint code {
+  background: var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+
 .insights-panel {
   margin-top: 16px;
 }

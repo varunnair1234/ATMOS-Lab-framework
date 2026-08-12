@@ -53,6 +53,25 @@ export default function Dashboard({ onLastUpdate }) {
 
   const stats = snapshot.stats || {}
   const figures = snapshot.figures || {}
+  const status = snapshot.status || {}
+
+  if (!figures.profile && status.source !== 'simulator') {
+    return (
+      <div className="device-waiting">
+        <p className="device-waiting-title">Waiting for iMet-X4…</p>
+        <p className="device-waiting-detail">
+          {status.port
+            ? `Listening on ${status.port} — no data received yet.`
+            : status.error || 'No serial port configured.'}
+        </p>
+        {!status.port && (
+          <p className="device-waiting-hint">
+            Set <code>IMET_SERIAL_PORT</code> (e.g. <code>/dev/ttyUSB0</code>, <code>COM3</code>) and restart the backend.
+          </p>
+        )}
+      </div>
+    )
+  }
 
   return (
     <>

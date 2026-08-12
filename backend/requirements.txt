@@ -6,3 +6,4 @@ scipy>=1.11
 matplotlib>=3.7
 plotly>=5.18
 huggingface_hub>=0.24
+pyserial>=3.5

@@ -7,11 +7,21 @@ from framework.figures import build_figures, build_stat_values
 router = APIRouter()
 
 
+@router.get("/status")
+def get_status():
+    return state.status()
+
+
 @router.get("/snapshot")
 def get_snapshot():
     df = state.snapshot()
     if df.empty:
-        return {"last_update": None, "stats": build_stat_values({}), "figures": None}
+        return {
+            "last_update": None,
+            "stats": build_stat_values({}),
+            "figures": None,
+            "status": state.status(),
+        }
 
     fig_th, fig_p, fig_prof, fig_wind = build_figures(df)
     last = df.iloc[-1].to_dict()
@@ -25,4 +35,5 @@ def get_snapshot():
             "profile": fig_to_json(fig_prof),
             "wind": fig_to_json(fig_wind),
         },
+        "status": state.status(),
     }

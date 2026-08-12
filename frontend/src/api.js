@@ -12,6 +12,10 @@ export function getDashboardSnapshot() {
   return getJson('/api/dashboard/snapshot')
 }
 
+export function getDashboardInsights() {
+  return getJson('/api/dashboard/insights')
+}
+
 export function getAnalysisSummary() {
   return getJson('/api/analysis/summary')
 }

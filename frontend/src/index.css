@@ -188,6 +188,37 @@ body {
   text-align: center;
 }
 
+.insights-panel {
+  margin-top: 16px;
+}
+
+.insights-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.insights-list li {
+  margin-bottom: 6px;
+}
+
+.insights-list li::marker {
+  color: var(--altitude);
+}
+
+.insights-meta {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.insights-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 12px 0;
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: 1fr;

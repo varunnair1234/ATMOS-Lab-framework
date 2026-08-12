@@ -24,6 +24,20 @@ uvicorn app.main:app --reload --port 8000
 
 Runs at `http://localhost:8000`. Check `http://localhost:8000/api/health`.
 
+To enable the "Actionable Insights" panel on the dashboard (LLM-generated
+callouts over the live telemetry, via the Hugging Face Inference API), set
+an [HF access token](https://huggingface.co/settings/tokens) before starting
+the backend:
+
+```bash
+export HF_TOKEN=hf_your_token_here
+```
+
+Without a token, that panel just shows a note asking you to set one — the
+rest of the app works normally. Optional overrides: `HF_INSIGHTS_MODEL`
+(default `HuggingFaceH4/zephyr-7b-beta`) and `INSIGHTS_TTL_SECONDS` (default
+`20`, how long a generated insight is cached before the next LLM call).
+
 **Frontend** (in a second terminal, from repo root):
 
 ```bash

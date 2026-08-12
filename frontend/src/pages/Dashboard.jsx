@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getDashboardSnapshot } from '../api'
 import StatCard from '../components/StatCard'
 import PlotPanel from '../components/PlotPanel'
+import InsightsPanel from '../components/InsightsPanel'
 
 const REFRESH_MS = 1000
 
@@ -72,6 +73,7 @@ export default function Dashboard({ onLastUpdate }) {
         <PlotPanel title="Temperature & Humidity" figure={figures.temperature_humidity} />
         <PlotPanel title="Pressure" figure={figures.pressure} />
       </div>
+      <InsightsPanel />
     </>
   )
 }

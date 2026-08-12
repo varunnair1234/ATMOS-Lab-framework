@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import state
-from .routers import analysis, dashboard
+from .routers import analysis, dashboard, insights
 
 
 @asynccontextmanager
@@ -37,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(insights.router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
 
 

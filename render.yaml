@@ -4,3 +4,6 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    envVars:
+      - key: HF_TOKEN
+        sync: false   # secret — paste your Hugging Face token in the Render dashboard

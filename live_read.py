@@ -6,6 +6,11 @@ Every session is logged to flights/ as it runs -- a canonical CSV
 that drops straight into quickstart.py/build_docs.py via DATA_CSV, plus a
 raw CSV with every field the board is currently configured to report.
 
+Connecting never fails outright -- if no port is found (or --port is
+wrong/the device isn't plugged in yet), it keeps retrying with backoff
+rather than exiting, so `--dashboard` can be started before the device is
+connected and will pick it up automatically once it appears.
+
 Usage:
     python live_read.py                 # auto-detect port, print parsed readings
     python live_read.py --port COM5     # use a specific port
@@ -14,11 +19,10 @@ Usage:
 
 import argparse
 import queue
-import sys
 import threading
 
 from framework.flight_log import FlightLogger
-from framework.serial_reader import DEFAULT_BAUD, IMetX4SerialReader, find_imet_x4_port
+from framework.serial_reader import DEFAULT_BAUD, IMetX4SerialReader
 
 CANONICAL_FIELDS = ["timestamp", "temperature", "humidity", "pressure",
                      "latitude", "longitude", "altitude"]
@@ -32,29 +36,33 @@ def main():
                          help="Launch the live Dash dashboard instead of printing to the console.")
     args = parser.parse_args()
 
-    port = args.port or find_imet_x4_port()
-    if port is None:
-        sys.exit("No iMet-X4 serial port found. Plug in the device or pass --port COMx.")
+    # port=None is fine -- the reader will keep auto-detecting on every
+    # retry (see IMetX4SerialReader._reconnect) rather than needing one to
+    # already be present at startup.
+    reader = IMetX4SerialReader(port=args.port, baud=args.baud)
 
-    reader = IMetX4SerialReader(port=port, baud=args.baud)
-    reader.connect()
-    print(f"Connected to {port} @ {args.baud} baud")
+    # FlightLogger needs the board's raw field list, which isn't known
+    # until the device actually answers -- so it's created lazily, the
+    # moment the schema is fetched (fires exactly once, even across
+    # reconnects), rather than blocking startup on a connection that may
+    # not exist yet.
+    state = {"logger": None}
 
-    schema = reader.fetch_configuration()
-    print(f"Fetched configuration: {len(schema.fields)} fields, delimiter={schema.delimiter!r}")
-    for f in schema.fields:
-        unit = f" ({f.unit})" if f.unit else ""
-        print(f"  [{f.group}] {f.key}: {f.header}{unit}")
-    print()
-
-    logger = FlightLogger(canonical_fields=CANONICAL_FIELDS, raw_fields=schema.keys)
-    print(f"Logging canonical readings -> {logger.canonical_path}")
-    print(f"Logging raw readings       -> {logger.raw_path}")
-    print()
+    def on_ready(schema):
+        state["logger"] = FlightLogger(canonical_fields=CANONICAL_FIELDS, raw_fields=schema.keys)
+        print(f"Logging canonical readings -> {state['logger'].canonical_path}")
+        print(f"Logging raw readings       -> {state['logger'].raw_path}")
+        for f in schema.fields:
+            unit = f" ({f.unit})" if f.unit else ""
+            print(f"  [{f.group}] {f.key}: {f.header}{unit}")
+        print()
 
     def on_reading(raw: dict):
-        logger.write(raw, reader.to_canonical_row(raw))
-        print(raw)
+        logger = state["logger"]
+        if logger is not None:
+            logger.write(raw, reader.to_canonical_row(raw))
+        if not args.dashboard:
+            print(raw)
 
     try:
         if args.dashboard:
@@ -63,25 +71,32 @@ def main():
             data_queue = queue.Queue()
             reader.data_queue = data_queue
 
-            def on_reading_with_logging(raw: dict):
-                logger.write(raw, reader.to_canonical_row(raw))
-
+            # Runs in the background so the dashboard opens immediately
+            # and shows a real "waiting for device" state (via reader=)
+            # instead of blocking the whole script on the connection.
             threading.Thread(
-                target=reader.start, kwargs={"on_reading": on_reading_with_logging}, daemon=True
+                target=reader.start,
+                kwargs={"on_reading": on_reading, "on_ready": on_ready},
+                daemon=True,
             ).start()
-            Dashboard(data_queue=data_queue).run()
+            Dashboard(data_queue=data_queue, reader=reader).run()
         else:
-            reader.start(on_reading=on_reading)
+            print("Waiting for iMet-X4… (Ctrl+C to stop)")
+            reader.start(on_reading=on_reading, on_ready=on_ready)
     except KeyboardInterrupt:
         pass
     finally:
         reader.close()
-        logger.close()
-        print(f"\nSession complete: {logger.rows_written} readings written.")
-        print(f"  Canonical: {logger.canonical_path}")
-        print(f"  Raw:       {logger.raw_path}")
-        print(f"\nRun the full report with:")
-        print(f"  DATA_CSV={logger.canonical_path} python quickstart.py")
+        logger = state["logger"]
+        if logger is not None:
+            logger.close()
+            print(f"\nSession complete: {logger.rows_written} readings written.")
+            print(f"  Canonical: {logger.canonical_path}")
+            print(f"  Raw:       {logger.raw_path}")
+            print(f"\nRun the full report with:")
+            print(f"  DATA_CSV={logger.canonical_path} python quickstart.py")
+        else:
+            print("\nSession ended before a device ever connected — nothing logged.")
 
 
 if __name__ == "__main__":

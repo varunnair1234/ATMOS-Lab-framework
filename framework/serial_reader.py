@@ -164,10 +164,23 @@ class IMetX4SerialReader:
         self.latest: Optional[dict] = None
         self._stop_event = threading.Event()
 
+        # Live connection state, so a caller (the Dash dashboard, a CLI
+        # status line, ...) can show an honest "waiting for device" /
+        # "connected" / "reconnecting" state instead of guessing from
+        # whether data happens to be flowing yet.
+        self.connected = False
+        self.last_error: Optional[str] = None
+
     # -- connection -------------------------------------------------------- #
 
     def connect(self):
+        """One-shot connect attempt — raises immediately on failure. Kept
+        for callers that want to handle a failed initial connect
+        themselves. For a connection that waits/retries until the device
+        shows up (recommended — see start()), use _reconnect() instead."""
         self._ser = serial.Serial(self.port_name, self.baud, timeout=self.read_timeout)
+        self.connected = True
+        self.last_error = None
         return self
 
     def close(self):
@@ -181,36 +194,62 @@ class IMetX4SerialReader:
     def stop(self):
         self._stop_event.set()
 
-    def _reconnect(self):
-        """Keep retrying to reopen the serial connection (exponential
-        backoff, uncapped attempts) after the link drops mid-session --
-        a USB hiccup or radio dropout, not the initial connect. The
+    def _reconnect(self, is_initial: bool = False):
+        """Keep retrying to (re)open the serial connection (exponential
+        backoff, uncapped attempts) until it succeeds or stop() is called.
+
+        Used both for the very first connect (is_initial=True, from
+        start()) and to recover after the link drops mid-session (a USB
+        hiccup or radio dropout) -- same retry logic either way. The
         packet schema and any FlightLogger session stay exactly as they
-        were; only the port handle is reopened, so an in-progress flight
-        log isn't fragmented by a brief glitch.
+        were across a mid-session reconnect; only the port handle is
+        reopened, so an in-progress flight log isn't fragmented by a
+        brief glitch.
+
+        If self.port_name is None (no --port given and none was found at
+        startup), each attempt re-runs auto-detection -- so a dashboard
+        launched before the device is plugged in will pick it up as soon
+        as it appears, rather than requiring a restart.
         """
+        self.connected = False
         if self._ser is not None:
             try:
                 self._ser.close()
             except Exception:
                 pass
+            self._ser = None
 
         delay = self.reconnect_initial_delay
         attempt = 0
         while not self._stop_event.is_set():
             attempt += 1
+
+            if self.port_name is None:
+                detected = find_imet_x4_port()
+                if detected is None:
+                    self.last_error = "No iMet-X4 serial port found"
+                    if self._stop_event.wait(delay):
+                        return
+                    delay = min(delay * 2, self.reconnect_max_delay)
+                    continue
+                self.port_name = detected
+
             try:
                 self._ser = serial.Serial(self.port_name, self.baud, timeout=self.read_timeout)
-                print(f"[iMet-X4] Reconnected to {self.port_name} after {attempt} attempt(s).")
+                self.connected = True
+                self.last_error = None
+                verb = "Connected" if is_initial else "Reconnected"
+                print(f"[iMet-X4] {verb} to {self.port_name} after {attempt} attempt(s).")
                 return
-            except (serial.SerialException, OSError):
+            except (serial.SerialException, OSError) as e:
+                self.last_error = str(e)
                 # Windows can reassign a different COM number when the
                 # FTDI device re-enumerates; fall back to re-detecting it.
                 fallback = find_imet_x4_port()
                 if fallback and fallback != self.port_name:
                     print(f"[iMet-X4] {self.port_name} not available; trying {fallback} instead.")
                     self.port_name = fallback
-                print(f"[iMet-X4] Connection lost. Retry {attempt} in {delay:.0f}s...")
+                print(f"[iMet-X4] Connect attempt {attempt} failed ({e}); retrying in {delay:.0f}s...")
                 if self._stop_event.wait(delay):
                     return  # stop() was called while waiting
                 delay = min(delay * 2, self.reconnect_max_delay)
@@ -326,20 +365,65 @@ class IMetX4SerialReader:
 
     # -- streaming ----------------------------------------------------------- #
 
-    def start(self, on_reading: Optional[Callable[[dict], None]] = None):
-        """Blocking read loop. Parses each line and, if configured, pushes a
-        Dashboard-ready reading onto self.data_queue. If the serial link
-        drops mid-session, reconnects automatically (see _reconnect) and
-        keeps going rather than ending the session."""
-        if self.schema is None:
-            self.fetch_configuration()
+    def start(
+        self,
+        on_reading: Optional[Callable[[dict], None]] = None,
+        on_ready: Optional[Callable[["PacketSchema"], None]] = None,
+    ):
+        """Blocking loop that owns the whole device lifecycle: connect
+        (waiting/retrying indefinitely until a device shows up — this
+        never raises for "not connected yet"), fetch its configuration,
+        then read and parse lines forever, automatically reconnecting
+        (see _reconnect) if the link drops or a device goes away and
+        comes back mid-session.
+
+        Safe to call without a prior connect()/fetch_configuration() —
+        it performs both itself. Because connecting is retried rather
+        than raised, this can be started in a background thread the
+        moment a UI (e.g. the Dash dashboard) launches, before the
+        device is even plugged in; the caller learns the real status via
+        self.connected / self.last_error, or the on_ready callback below.
+
+        on_ready(schema) fires exactly once, right after the schema is
+        first fetched — the earliest point a caller can do schema-
+        dependent setup (e.g. opening a FlightLogger, which needs the
+        raw field list).
+        """
         self._stop_event.clear()
+        ready_fired = False
+
         while not self._stop_event.is_set():
+            if not self.connected:
+                self._reconnect(is_initial=self.schema is None)
+                if self._stop_event.is_set():
+                    return
+
+            if self.schema is None:
+                try:
+                    self.schema = self.fetch_configuration()
+                    print(
+                        f"[iMet-X4] Fetched configuration: {len(self.schema.fields)} fields, "
+                        f"delimiter={self.schema.delimiter!r}"
+                    )
+                except (TimeoutError, serial.SerialException, OSError) as e:
+                    # Connected to *something*, but it didn't answer like an
+                    # X4 (wrong baud, wrong device, board still booting).
+                    # Treat like a dropped connection and retry from the top.
+                    self.connected = False
+                    self.last_error = f"Configuration fetch failed: {e}"
+                    print(f"[iMet-X4] {self.last_error}")
+                    continue
+
+            if not ready_fired and on_ready is not None:
+                on_ready(self.schema)
+                ready_fired = True
+
             try:
                 raw = self._ser.readline()
-            except (serial.SerialException, OSError):
+            except (serial.SerialException, OSError) as e:
                 print("[iMet-X4] Serial connection dropped.")
-                self._reconnect()
+                self.connected = False
+                self.last_error = str(e)
                 continue
             if not raw:
                 continue

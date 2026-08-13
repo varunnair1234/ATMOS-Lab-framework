@@ -1,7 +1,4 @@
-
-
 import queue
-import threading
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -10,7 +7,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import dash
-from dash import dcc, html, Input, Output, callback
+from dash import dcc, html, Input, Output
+
+from framework.insights import get_insights
 
 # How many readings to keep in memory for the live ring buffer
 RING_BUFFER_SIZE = 3600  # ~1 hour at 1 Hz
@@ -30,6 +29,8 @@ _COLORS = {
     "border":          "#2a2d3a",
     "text_primary":    "#e8e6df",
     "text_secondary":  "#8a8880",
+    "waiting":         "#8a8880",
+    "reconnecting":    "#BA7517",
 }
 
 _PLOTLY_LAYOUT = dict(
@@ -91,27 +92,42 @@ class Dashboard:
         Pre-loaded DataFrame (post-flight mode). Must contain at minimum
         the columns in REQUIRED_COLS.
     data_queue : queue.Queue, optional
-        Thread-safe queue fed by SerialReader (live mode). Each item
+        Thread-safe queue fed by IMetX4SerialReader (live mode). Each item
         should be a dict with keys matching REQUIRED_COLS.
+    reader : IMetX4SerialReader, optional
+        The reader instance feeding data_queue, if any. Purely optional —
+        used only to show real connection status ("waiting for device",
+        "reconnecting", the actual port/error) instead of just blank
+        charts while there's no data yet. Live mode works without it, it
+        just can't explain *why* nothing has arrived yet.
     port : int
         Local port for the Dash server (default 8050).
     refresh_interval : int
         Dashboard refresh interval in milliseconds (default 1000).
+    insights_interval : int
+        How often to refresh the Actionable Insights panel, in
+        milliseconds (default 20000). Kept much slower than
+        refresh_interval since each refresh is a real network call to an
+        LLM provider — see framework.insights for caching details.
     """
 
     def __init__(
         self,
         dataframe: Optional[pd.DataFrame] = None,
         data_queue: Optional[queue.Queue] = None,
+        reader=None,
         port: int = 8050,
         refresh_interval: int = 1000,
+        insights_interval: int = 20000,
     ):
         if dataframe is None and data_queue is None:
             raise ValueError("Provide either dataframe= or data_queue=.")
 
         self.port = port
         self.refresh_interval = refresh_interval
+        self.insights_interval = insights_interval
         self._queue = data_queue
+        self._reader = reader
         self._live = data_queue is not None
 
         # Internal ring buffer for live mode
@@ -131,10 +147,56 @@ class Dashboard:
         self._register_callbacks()
 
     # ------------------------------------------------------------------ #
+    #  Connection status                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _connection_status(self):
+        """(text, color) for the header status line — reflects the real
+        reader state when one was provided, rather than assuming "live" =
+        "connected"."""
+        if not self._live:
+            return "Post-flight mode", _COLORS["text_secondary"]
+        if self._reader is None:
+            # Live mode but no reader reference to introspect — best we
+            # can say is whether data has actually arrived.
+            return ("● LIVE" if self._buffer else "○ Waiting for data…"), \
+                   (_COLORS["pressure"] if self._buffer else _COLORS["waiting"])
+        if self._reader.connected:
+            if self._buffer:
+                return "● LIVE", _COLORS["pressure"]
+            return "● Connected — waiting for first reading…", _COLORS["pressure"]
+        if self._buffer:
+            # We had data before, link dropped — _reconnect() is retrying.
+            return f"⚠ Reconnecting… ({self._reader.last_error})", _COLORS["reconnecting"]
+        detail = self._reader.last_error or f"listening on {self._reader.port_name or 'auto-detected port'}"
+        return f"○ Waiting for iMet-X4 ({detail})", _COLORS["waiting"]
+
+    def _build_waiting_panel(self) -> html.Div:
+        if self._reader is not None:
+            port = self._reader.port_name or "auto-detecting a port…"
+            detail = self._reader.last_error or f"Listening on {port} — no data yet."
+        else:
+            detail = "No data received yet."
+        return html.Div(
+            style={
+                "background": _COLORS["panel"], "border": f"1px solid {_COLORS['border']}",
+                "borderRadius": "10px", "padding": "60px 24px", "textAlign": "center",
+                "gridColumn": "1 / -1",
+            },
+            children=[
+                html.P("Waiting for iMet-X4…",
+                       style={"margin": "0 0 8px", "fontSize": "16px", "fontWeight": "500"}),
+                html.P(detail, style={"margin": 0, "fontSize": "13px", "color": _COLORS["text_secondary"]}),
+            ],
+        )
+
+    # ------------------------------------------------------------------ #
     #  Layout                                                              #
     # ------------------------------------------------------------------ #
 
     def _build_layout(self):
+        status_text, status_color = self._connection_status()
+
         self.app.layout = html.Div(
             style={"minHeight": "100vh", "background": _COLORS["background"],
                    "color": _COLORS["text_primary"], "fontFamily": "system-ui, sans-serif",
@@ -149,9 +211,8 @@ class Dashboard:
                             html.H1("iMet-X4 Monitor",
                                     style={"margin": 0, "fontSize": "20px", "fontWeight": "500"}),
                             html.P(
-                                "● LIVE" if self._live else "Post-flight mode",
-                                style={"margin": "2px 0 0", "fontSize": "12px",
-                                       "color": "#1D9E75" if self._live else _COLORS["text_secondary"]},
+                                status_text, id="connection-status",
+                                style={"margin": "2px 0 0", "fontSize": "12px", "color": status_color},
                             ),
                         ]),
                         html.Div(id="last-update",
@@ -172,24 +233,41 @@ class Dashboard:
                     ],
                 ),
 
-                # Main plots grid
+                # Main plots grid — swapped between a waiting message and the
+                # four chart panels by the refresh callback below.
                 html.Div(
+                    id="content-area",
                     style={"display": "grid",
                            "gridTemplateColumns": "1fr 1fr",
                            "gridTemplateRows": "auto auto",
-                           "gap": "16px"},
-                    children=[
-                        self._panel("Atmospheric Profile", dcc.Graph(id="graph-profile",   config={"displayModeBar": False})),
-                        self._panel("Wind",                dcc.Graph(id="graph-wind",       config={"displayModeBar": False})),
-                        self._panel("Temperature & Humidity", dcc.Graph(id="graph-th",      config={"displayModeBar": False})),
-                        self._panel("Pressure",            dcc.Graph(id="graph-pressure",   config={"displayModeBar": False})),
-                    ],
+                           "gap": "16px", "marginBottom": "20px"},
+                    children=[self._build_waiting_panel()] if not self._buffer
+                              else self._build_chart_panels(pd.DataFrame(list(self._buffer))),
                 ),
 
-                # Refresh trigger
+                # Actionable Insights
+                self._panel(
+                    "Actionable Insights",
+                    html.Div(
+                        id="insights-content",
+                        children=[html.P(
+                            "Waiting for data before generating insights…" if not self._buffer
+                            else "Generating…",
+                            style={"margin": 0, "fontSize": "13px", "color": _COLORS["text_secondary"]},
+                        )],
+                    ),
+                ),
+
+                # Refresh triggers
                 dcc.Interval(
                     id="interval",
                     interval=self.refresh_interval,
+                    n_intervals=0,
+                    disabled=not self._live,
+                ),
+                dcc.Interval(
+                    id="insights-interval",
+                    interval=self.insights_interval,
                     n_intervals=0,
                     disabled=not self._live,
                 ),
@@ -212,8 +290,18 @@ class Dashboard:
             ],
         )
 
+    def _build_chart_panels(self, df: pd.DataFrame) -> list:
+        fig_th, fig_p, fig_prof, fig_wind = self._build_figures(df)
+        graph_config = {"displayModeBar": False}
+        return [
+            self._panel("Atmospheric Profile", dcc.Graph(figure=fig_prof, config=graph_config)),
+            self._panel("Wind",                dcc.Graph(figure=fig_wind, config=graph_config)),
+            self._panel("Temperature & Humidity", dcc.Graph(figure=fig_th, config=graph_config)),
+            self._panel("Pressure",            dcc.Graph(figure=fig_p, config=graph_config)),
+        ]
+
     # ------------------------------------------------------------------ #
-    #  Callbacks                                                           #
+    #  Figures                                                             #
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -287,71 +375,100 @@ class Dashboard:
         return fmt("temperature"), fmt("humidity", 0), fmt("pressure", 1), \
                fmt("altitude", 0), fmt("wind_speed")
 
+    @staticmethod
+    def _render_insights(result: dict):
+        if result["error"]:
+            return html.P(result["error"],
+                           style={"margin": 0, "fontSize": "13px", "color": _COLORS["text_secondary"]})
+        bullets = [line.strip("-• \t") for line in result["insights"].splitlines() if line.strip()]
+        return html.Div([
+            html.Ul(
+                [html.Li(b, style={"marginBottom": "4px"}) for b in bullets],
+                style={"margin": "0 0 8px", "paddingLeft": "18px", "fontSize": "13px",
+                       "color": _COLORS["text_primary"]},
+            ),
+            html.P(f"Generated by {result['model']} · {result['generated_at']}",
+                   style={"margin": 0, "fontSize": "11px", "color": _COLORS["text_secondary"]}),
+        ])
+
+    # ------------------------------------------------------------------ #
+    #  Callbacks                                                           #
+    # ------------------------------------------------------------------ #
+
     def _register_callbacks(self):
 
         @self.app.callback(
-            Output("graph-th",       "figure"),
-            Output("graph-pressure", "figure"),
-            Output("graph-profile",  "figure"),
-            Output("graph-wind",     "figure"),
-            Output("last-update",    "children"),
-            Input("interval",        "n_intervals"),
+            Output("content-area",     "children"),
+            Output("connection-status", "children"),
+            Output("connection-status", "style"),
+            Output("last-update",      "children"),
+            Output("stat-temperature", "children"),
+            Output("stat-humidity",    "children"),
+            Output("stat-pressure",    "children"),
+            Output("stat-altitude",    "children"),
+            Output("stat-wind-speed",  "children"),
+            Input("interval",          "n_intervals"),
         )
         def refresh(_n):
             # Pull new items from the queue into the buffer (live mode)
             if self._queue is not None:
                 while True:
                     try:
-                        item = self._queue.get_nowait()
-                        self._buffer.append(item)
+                        self._buffer.append(self._queue.get_nowait())
                     except queue.Empty:
                         break
 
+            status_text, status_color = self._connection_status()
+            status_style = {"margin": "2px 0 0", "fontSize": "12px", "color": status_color}
+
             if not self._buffer:
-                empty = go.Figure()
-                empty.update_layout(**_PLOTLY_LAYOUT)
-                return empty, empty, empty, empty, "No data yet"
+                return (
+                    [self._build_waiting_panel()], status_text, status_style, "No data yet",
+                    "—", "—", "—", "—", "—",
+                )
 
             df = pd.DataFrame(list(self._buffer))
-            fig_th, fig_p, fig_prof, fig_wind = self._build_figures(df)
+            content = self._build_chart_panels(df)
 
             last = df.iloc[-1]
             timestamp_str = str(last.get("timestamp", ""))
-            return fig_th, fig_p, fig_prof, fig_wind, f"Last update: {timestamp_str}"
+            stat_values = self._build_stat_values(last.to_dict())
+            return (content, status_text, status_style, f"Last update: {timestamp_str}", *stat_values)
 
-        # Live stat card values
         @self.app.callback(
-            Output("stat-temperature", "children"),
-            Output("stat-humidity",    "children"),
-            Output("stat-pressure",    "children"),
-            Output("stat-altitude",    "children"),
-            Output("stat-wind-speed",  "children"),
-            Input("interval", "n_intervals"),
+            Output("insights-content", "children"),
+            Input("insights-interval", "n_intervals"),
         )
-        def update_stats(_n):
-            if not self._buffer:
-                return "—", "—", "—", "—", "—"
-            return self._build_stat_values(self._buffer[-1])
+        def refresh_insights(_n):
+            df = pd.DataFrame(list(self._buffer)) if self._buffer else pd.DataFrame()
+            result = get_insights(df)
+            return self._render_insights(result)
 
     # ------------------------------------------------------------------ #
     #  Run                                                                 #
     # ------------------------------------------------------------------ #
 
     def run(self, debug: bool = False, open_browser: bool = True):
-        """Start the Dash server. Blocking call."""
+        """Start the Dash server. Blocking call.
+
+        threaded=True so a slow Actionable Insights request (a real
+        network call to an LLM provider) doesn't stall the 1s chart
+        refresh while it's in flight.
+        """
         if open_browser:
             import webbrowser, threading
             threading.Timer(1.5, lambda: webbrowser.open_new(f"http://localhost:{self.port}")).start()
         print(f"\n  iMet-X4 Dashboard running → http://localhost:{self.port}")
         print("  Press Ctrl+C to stop.\n")
-        self.app.run(debug=debug, port=self.port, use_reloader=False, host="127.0.0.1")
+        self.app.run(debug=debug, port=self.port, use_reloader=False, host="127.0.0.1", threaded=True)
 
     def export_static_html(self, path: str):
         """
         Render the current buffer as a single self-contained static HTML file
         (interactive Plotly charts, no live server). Used to publish a
         post-flight snapshot to GitHub Pages, since Pages can't run the
-        live Dash server.
+        live Dash server. Includes a one-shot Actionable Insights call
+        (if HF_TOKEN is set) baked into the static page.
         """
         import plotly.io as pio
 
@@ -382,6 +499,18 @@ class Dashboard:
             for (label, unit), value, color in zip(stat_labels, stat_values, stat_colors)
         )
 
+        insights_result = get_insights(df)
+        if insights_result["error"]:
+            insights_html = f'<p class="insights-note">{insights_result["error"]}</p>'
+        else:
+            bullets = [line.strip("-• \t") for line in insights_result["insights"].splitlines() if line.strip()]
+            items_html = "".join(f"<li>{b}</li>" for b in bullets)
+            insights_html = (
+                f'<ul class="insights-list">{items_html}</ul>'
+                f'<p class="insights-note">Generated by {insights_result["model"]} '
+                f'&middot; {insights_result["generated_at"]}</p>'
+            )
+
         timestamp_str = str(df.iloc[-1].get("timestamp", ""))
 
         html = f"""<!doctype html>
@@ -402,9 +531,12 @@ class Dashboard:
   .stat-label {{ margin: 0 0 4px; font-size: 11px; color: {_COLORS['text_secondary']}; letter-spacing: 0.06em; }}
   .stat-value {{ font-size: 24px; font-weight: 600; }}
   .stat-unit {{ font-size: 13px; color: {_COLORS['text_secondary']}; margin-left: 4px; }}
-  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }}
   .panel {{ background: {_COLORS['panel']}; border: 1px solid {_COLORS['border']}; border-radius: 10px; padding: 16px; }}
   .panel p {{ margin: 0 0 10px; font-size: 13px; color: {_COLORS['text_secondary']}; font-weight: 500; }}
+  .insights-list {{ margin: 0 0 8px; padding-left: 18px; font-size: 13px; }}
+  .insights-list li {{ margin-bottom: 4px; }}
+  .insights-note {{ margin: 0; font-size: 11px; color: {_COLORS['text_secondary']}; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
 </style>
 </head>
@@ -422,6 +554,7 @@ class Dashboard:
     <div class="panel"><p>Atmospheric Profile</p>{graphs_html[2]}</div>
     <div class="panel"><p>Wind</p>{graphs_html[3]}</div>
   </div>
+  <div class="panel"><p>Actionable Insights</p>{insights_html}</div>
 </body>
 </html>
 """

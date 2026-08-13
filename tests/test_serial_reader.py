@@ -132,10 +132,80 @@ def test_reconnect_stops_promptly_when_stop_is_called():
     assert reader._ser is None  # never succeeded
 
 
+def test_connected_flag_and_last_error_track_reconnect_attempts():
+    """.connected / .last_error should reflect reality at every step, since
+    the dashboard's "waiting for device" / "live" UI is driven entirely
+    by these two attributes."""
+    reader = _fast_reader()
+    assert reader.connected is False
+    assert reader.last_error is None
+
+    good_serial = MagicMock()
+    with patch("framework.serial_reader.serial.Serial",
+               side_effect=[serial.SerialException("no such device"), good_serial]), \
+         patch("framework.serial_reader.find_imet_x4_port", return_value=None):
+        reader._reconnect(is_initial=True)
+
+    assert reader.connected is True
+    assert reader.last_error is None
+    assert reader._ser is good_serial
+
+
+def test_reconnect_auto_detects_port_when_none_configured():
+    """port_name=None (no --port given, none found at startup) should keep
+    polling find_imet_x4_port() each attempt rather than failing outright —
+    covers plugging the device in after the dashboard has already launched."""
+    reader = IMetX4SerialReader(port=None, reconnect_initial_delay=0.01, reconnect_max_delay=0.02)
+    good_serial = MagicMock()
+
+    with patch("framework.serial_reader.find_imet_x4_port",
+               side_effect=[None, None, "/dev/ttyUSB7"]), \
+         patch("framework.serial_reader.serial.Serial", return_value=good_serial) as mock_serial:
+        reader._reconnect(is_initial=True)
+
+    assert reader.connected is True
+    assert reader.port_name == "/dev/ttyUSB7"
+    mock_serial.assert_called_once_with("/dev/ttyUSB7", reader.baud, timeout=reader.read_timeout)
+
+
+def test_start_fires_on_ready_once_then_reads_queued_lines():
+    """start() should connect, fetch configuration, fire on_ready exactly
+    once, then parse subsequent lines — the full lifecycle a dashboard
+    relies on to flip from 'waiting for device' to live."""
+    reader = build_reader()  # schema pre-populated, so fetch_configuration is skipped
+    reader._ser = MagicMock()
+    reader.connected = True  # pretend _reconnect already succeeded
+
+    lines = [SAMPLE_LINE.encode("ascii") + b"\r\n", b""]  # one reading, then stop
+
+    def fake_readline():
+        if lines:
+            line = lines.pop(0)
+            if not lines:
+                reader.stop()
+            return line
+        reader.stop()
+        return b""
+
+    reader._ser.readline.side_effect = fake_readline
+
+    ready_calls = []
+    readings = []
+    reader.start(on_reading=readings.append, on_ready=ready_calls.append)
+
+    assert len(ready_calls) == 1
+    assert ready_calls[0] is reader.schema
+    assert len(readings) == 1
+    assert readings[0]["serial_number"] == "905302"
+
+
 if __name__ == "__main__":
     test_field_count_matches_sample_line()
     test_parses_known_values()
     test_dashboard_adapter_prefers_external_sensors()
     test_reconnect_retries_then_succeeds()
     test_reconnect_stops_promptly_when_stop_is_called()
+    test_connected_flag_and_last_error_track_reconnect_attempts()
+    test_reconnect_auto_detects_port_when_none_configured()
+    test_start_fires_on_ready_once_then_reads_queued_lines()
     print("All tests passed.")

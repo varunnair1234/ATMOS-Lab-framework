@@ -28,6 +28,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build static dashboard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python build_docs.py
 
       - uses: actions/upload-pages-artifact@v3

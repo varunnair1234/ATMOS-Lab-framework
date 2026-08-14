@@ -23,10 +23,12 @@ keeps parsing correct regardless of which sensors are plugged in.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 import serial
@@ -117,6 +119,31 @@ class PacketSchema:
     @property
     def keys(self):
         return [f.key for f in self.fields]
+
+    def to_dict(self) -> dict:
+        return {"delimiter": self.delimiter, "fields": [asdict(f) for f in self.fields]}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PacketSchema":
+        return cls(delimiter=data["delimiter"], fields=[FieldSchema(**f) for f in data["fields"]])
+
+
+def save_schema(schema: PacketSchema, path: str):
+    """Cache a fetched schema to disk. /CBD and /CJ4-/CJ9 (the commands
+    fetch_configuration() sends) only work over J1 (manual section 3.3.1) --
+    the X4's own iMet-XS software treats J3 as data-view only, with no
+    config querying over it (section 2.4.1). So a wireless session over an
+    RFD900x radio on J3 has no command channel back to the board and can't
+    fetch its own schema; it has to reuse one captured over a direct J1/USB
+    connection instead.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(schema.to_dict(), indent=2))
+
+
+def load_schema(path: str) -> PacketSchema:
+    return PacketSchema.from_dict(json.loads(Path(path).read_text()))
 
 
 # --------------------------------------------------------------------------- #

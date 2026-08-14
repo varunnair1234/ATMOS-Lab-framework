@@ -42,6 +42,28 @@ reconnects automatically with backoff (retrying the same COM port, falling
 back to re-detecting the device if Windows reassigns a different one) and
 keeps appending to the same log files rather than ending the session.
 
+#### Flying wireless (RFD900x radio on J3)
+
+`/CBD` and `/CJ4`-`/CJ9` — the commands used to learn the board's field
+layout — only work over J1 (manual section 3.3.1); J3 (what an RFD900x
+radio kit connects to, section 2.4.1) is data-out only, with no command
+channel back to the board. So a session over the radio link can't fetch
+its own configuration — it has to reuse one already captured over a
+direct J1/USB connection:
+
+```
+python live_read.py                                  # 1. wired: fetches + caches the schema
+python live_read.py --dashboard_wireless --port COM7  # 2. wireless: loads the cached schema
+```
+
+Every direct (non-wireless) run caches its fetched schema to
+`flights/last_schema.json` (override with `--schema-file`) automatically,
+so step 1 just needs to have happened at some point before flight — with
+the same sensor configuration still plugged in — for step 2 to work.
+`--dashboard_wireless` requires `--port` explicitly, since auto-detection
+is tuned for finding the X4 itself and isn't reliable when a radio
+ground-adapter could be plugged in too.
+
 ### 2. Post-flight report — `quickstart.py`
 
 Runs the full stats + time-series pipeline (histograms, correlation

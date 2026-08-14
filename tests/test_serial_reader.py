@@ -8,12 +8,14 @@ and configuration captured from the user's iMet-X4 (serial 905302):
   - J8, J9: temperature sensors
 """
 
+import tempfile
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import serial
 
-from framework.serial_reader import IMetX4SerialReader
+from framework.serial_reader import IMetX4SerialReader, load_schema, save_schema
 
 SAMPLE_LINE = (
     "905302,9999/9999/9999,9999:9999:9999,381.47,100,1015.10,28.15,46.30,"
@@ -97,6 +99,26 @@ def test_dashboard_adapter_prefers_external_sensors():
     assert item["altitude"] is None
 
 
+def test_schema_round_trips_through_save_and_load():
+    # Simulates the --dashboard_wireless flow: fetch/build a schema over a
+    # direct J1 session, cache it, then reload it (as a separate "wireless"
+    # session over J3/radio would, with no command channel of its own) and
+    # confirm it still parses the exact same sample line identically.
+    reader = build_reader()
+    original = reader.parse_line(SAMPLE_LINE)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = Path(tmp) / "schema.json"
+        save_schema(reader.schema, str(cache_path))
+
+        reloaded_reader = IMetX4SerialReader(port="COM_WIRELESS")
+        reloaded_reader.schema = load_schema(str(cache_path))
+
+    assert reloaded_reader.schema.delimiter == reader.schema.delimiter
+    assert reloaded_reader.schema.keys == reader.schema.keys
+    assert reloaded_reader.parse_line(SAMPLE_LINE) == original
+
+
 def _fast_reader() -> IMetX4SerialReader:
     return IMetX4SerialReader(
         port="COM_TEST", reconnect_initial_delay=0.01, reconnect_max_delay=0.02
@@ -136,6 +158,7 @@ if __name__ == "__main__":
     test_field_count_matches_sample_line()
     test_parses_known_values()
     test_dashboard_adapter_prefers_external_sensors()
+    test_schema_round_trips_through_save_and_load()
     test_reconnect_retries_then_succeeds()
     test_reconnect_stops_promptly_when_stop_is_called()
     print("All tests passed.")

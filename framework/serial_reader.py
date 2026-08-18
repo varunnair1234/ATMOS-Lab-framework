@@ -118,6 +118,27 @@ class PacketSchema:
     def keys(self):
         return [f.key for f in self.fields]
 
+    def to_dict(self) -> dict:
+        """Serializable form -- for capturing a schema fetched once over a
+        direct USB connection (fetch_configuration()) and reusing it later
+        against lines that arrive without a live two-way link to ask for
+        it, e.g. framework.radio_link_reader reading a passively-tapped
+        TX line relayed over a radio. See capture_x4_schema.py."""
+        return {
+            "delimiter": self.delimiter,
+            "fields": [
+                {"key": f.key, "header": f.header, "unit": f.unit, "kind": f.kind, "group": f.group}
+                for f in self.fields
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PacketSchema":
+        return cls(
+            delimiter=d["delimiter"],
+            fields=[FieldSchema(**f) for f in d["fields"]],
+        )
+
 
 # --------------------------------------------------------------------------- #
 #  Port auto-detection

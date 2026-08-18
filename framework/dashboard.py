@@ -14,9 +14,11 @@ from framework.insights import get_insights
 # How many readings to keep in memory for the live ring buffer
 RING_BUFFER_SIZE = 3600  # ~1 hour at 1 Hz
 
-# Columns we expect from the iMet-X4
+# Columns we expect from the iMet-X4 (or, in a fused session, from
+# framework.multi_sensor.SensorHub combining it with an ATMOS 22 and/or a
+# Trisonica Mini -- see framework.atmos22_reader / framework.trisonica_reader)
 REQUIRED_COLS = ["timestamp", "temperature", "humidity", "pressure"]
-OPTIONAL_COLS = ["latitude", "longitude", "altitude", "wind_speed", "wind_direction"]
+OPTIONAL_COLS = ["latitude", "longitude", "altitude", "wind_speed", "wind_direction", "wind_gust"]
 
 _COLORS = {
     "temperature":     "#E8593C",

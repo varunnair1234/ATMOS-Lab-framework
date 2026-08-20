@@ -10,8 +10,8 @@ post-flight from a CSV.
 ```
 pip install -r requirements.txt
 ```
-```
 To run the live dashboard:
+```
 python live_read.py --port <X4's port> --dashboard
 
 ```

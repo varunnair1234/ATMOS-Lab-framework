@@ -12,7 +12,7 @@ pip install -r requirements.txt
 ```
 To run the live dashboard:
 ```
-python live_read.py --port <X4's port> --dashboard
+python live_read_multi.py --x4-port <X4's port> --atmos22-port <ATMOS22 adapter's port> --trisonica-port <Trisonica's port> --dashboard
 
 ```
 

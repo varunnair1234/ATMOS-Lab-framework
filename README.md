@@ -13,8 +13,12 @@ pip install -r requirements.txt
 To run the live dashboard:
 ```
 python live_read_multi.py --x4-port <X4's port> --atmos22-port <ATMOS22 adapter's port> --trisonica-port <Trisonica's port> --dashboard
-
 ```
+Run the atmos-22 standalone:
+```
+python live_read_radio.py --port <board's USB port> --baud 115200 --dashboard
+```
+
 
 ## Sensors
 

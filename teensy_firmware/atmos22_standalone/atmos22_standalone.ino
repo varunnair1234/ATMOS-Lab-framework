@@ -80,14 +80,44 @@ void poll_atmos22() {
 
   String command = String(ATMOS22_ADDRESS) + "M!";
   String reply = sdi12.sendCommand(command);   // "attt n" -- wait time + value count
-  if (reply.length() < 5) return;              // malformed/no response, skip this cycle
+
+  // DEBUG -- tagged $DBG (not $A22) so it never gets mistaken for real
+  // data by the ground-station parser, which only recognizes $A22/$TSM/$X4.
+  // Shows what the sensor CLAIMS it will send (n) vs. what aD0! actually
+  // returns below -- if n says 6 but the body only has 3 values, that
+  // points at a transmission/timing problem (see the Teensy 4.x SDI-12
+  // caution at the top of this file), not the sensor deciding to send less.
+  Serial.print("$DBG M!-reply=[");
+  Serial.print(reply);
+  Serial.print("] len=");
+  Serial.println(reply.length());
+
+  if (reply.length() < 5) {
+    Serial.println("$DBG M! reply too short/malformed -- skipping this cycle");
+    return;
+  }
 
   int wait_s = reply.substring(1, 4).toInt();
+  int n_values_expected = reply.substring(4).toInt();
+  Serial.print("$DBG wait_s=");
+  Serial.print(wait_s);
+  Serial.print(" n_values_expected=");
+  Serial.println(n_values_expected);
+
   delay(wait_s * 1000UL);  // blocking is fine here -- SDI-12 measurement wait is normally a few seconds
 
   String data_command = String(ATMOS22_ADDRESS) + "D0!";
   String data_reply = sdi12.sendCommand(data_command);
-  if (data_reply.length() < 2) return;
+
+  Serial.print("$DBG D0!-reply=[");
+  Serial.print(data_reply);
+  Serial.print("] len=");
+  Serial.println(data_reply.length());
+
+  if (data_reply.length() < 2) {
+    Serial.println("$DBG D0! reply too short/malformed -- skipping this cycle");
+    return;
+  }
 
   // Strip the address echo the sensor prepends -- matches what
   // ATMOS22SDI12Reader._read_reply() does on the direct-USB side, so the

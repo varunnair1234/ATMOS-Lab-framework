@@ -100,6 +100,12 @@ void poll_atmos22() {
   if (reply.length() < 6) return;              // malformed/no response, skip this cycle
 
   int wait_s = reply.substring(1, 4).toInt();
+  int n_values_expected = reply.substring(4).toInt();
+  Serial.print("$DBG wait_s=");
+  Serial.print(wait_s);
+  Serial.print(" n_values_expected=");
+  Serial.println(n_values_expected);
+
   delay(wait_s * 1000UL);  // blocking is fine here -- SDI-12 measurement wait is normally a few seconds
 
   // D0: wind speed, wind direction, gust wind speed

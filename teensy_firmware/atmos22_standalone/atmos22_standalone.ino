@@ -54,7 +54,7 @@
 #include <SDI12.h>
 
 #define PIN_SDI12_DATA 2        // <-- SDI-12 data line, any free GPIO
-#define ATMOS22_ADDRESS '0'
+#define ATMOS22_ADDRESS 'c'
 #define ATMOS22_POLL_INTERVAL_MS 10000UL  // matches the sensor's own ~10s internal average window
 #define USB_BAUD 115200          // just needs to match on the Python side (pyserial default read is baud-agnostic if you pass the same value; see live_read_radio.py --baud)
 
@@ -78,21 +78,103 @@ void poll_atmos22() {
   if (now - last_poll < ATMOS22_POLL_INTERVAL_MS) return;
   last_poll = now;
 
-  String command = String(ATMOS22_ADDRESS) + "M!";
-  String reply = sdi12.sendCommand(command);   // "attt n" -- wait time + value count
-  if (reply.length() < 5) return;              // malformed/no response, skip this cycle
+  // Use the concurrent measurement command so D0, D1, and D2 contain
+  // wind, temperature, and orientation data respectively.
+  String command = String(ATMOS22_ADDRESS) + "C!";
+
+  sdi12.clearBuffer();
+  sdi12.sendCommand(command);
+  delay(30);
+
+  String reply = "";
+  while (sdi12.available()) {
+    char c = sdi12.read();
+    if ((c != '\n') && (c != '\r')) {
+      reply += c;
+      delay(10);
+    }
+  }
+  sdi12.clearBuffer();
+
+  // "atttnn" -- wait time + value count
+  if (reply.length() < 6) return;              // malformed/no response, skip this cycle
 
   int wait_s = reply.substring(1, 4).toInt();
   delay(wait_s * 1000UL);  // blocking is fine here -- SDI-12 measurement wait is normally a few seconds
 
+  // D0: wind speed, wind direction, gust wind speed
   String data_command = String(ATMOS22_ADDRESS) + "D0!";
-  String data_reply = sdi12.sendCommand(data_command);
+
+  sdi12.clearBuffer();
+  sdi12.sendCommand(data_command);
+  delay(30);
+
+  String data_reply = "";
+  while (sdi12.available()) {
+    char c = sdi12.read();
+    if ((c != '\n') && (c != '\r')) {
+      data_reply += c;
+      delay(10);
+    }
+  }
+  sdi12.clearBuffer();
+
   if (data_reply.length() < 2) return;
+
+  // D1: air temperature
+  String temp_command = String(ATMOS22_ADDRESS) + "D1!";
+
+  sdi12.clearBuffer();
+  sdi12.sendCommand(temp_command);
+  delay(30);
+
+  String temp_reply = "";
+  while (sdi12.available()) {
+    char c = sdi12.read();
+    if ((c != '\n') && (c != '\r')) {
+      temp_reply += c;
+      delay(10);
+    }
+  }
+  sdi12.clearBuffer();
+
+  if (temp_reply.length() < 2) return;
+
+  // D2: X orientation, Y orientation, null value
+  String tilt_command = String(ATMOS22_ADDRESS) + "D2!";
+
+  sdi12.clearBuffer();
+  sdi12.sendCommand(tilt_command);
+  delay(30);
+
+  String tilt_reply = "";
+  while (sdi12.available()) {
+    char c = sdi12.read();
+    if ((c != '\n') && (c != '\r')) {
+      tilt_reply += c;
+      delay(10);
+    }
+  }
+  sdi12.clearBuffer();
+
+  if (tilt_reply.length() < 2) return;
 
   // Strip the address echo the sensor prepends -- matches what
   // ATMOS22SDI12Reader._read_reply() does on the direct-USB side, so the
   // ground-station parser sees the exact same reply-body format either way.
   String body = data_reply.substring(1);
+  String temp_body = temp_reply.substring(1);
+  String tilt_body = tilt_reply.substring(1);
+
+  // D2 includes a final null value that ATMOS 22 always reports as 0.
+  // Remove it so the output contains exactly the six values expected by
+  // the ground-station parser.
+  int null_pos = tilt_body.lastIndexOf('+');
+  if (null_pos < 0) return;
+  tilt_body = tilt_body.substring(0, null_pos);
+
   Serial.print("$A22 ");
-  Serial.println(body);
+  Serial.print(body);
+  Serial.print(temp_body);
+  Serial.println(tilt_body);
 }

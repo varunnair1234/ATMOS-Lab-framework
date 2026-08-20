@@ -226,12 +226,28 @@ class RadioLinkReader:
 
     # -- streaming ------------------------------------------------------------ #
 
-    def start(self, on_reading: Optional[Callable] = None, on_ready: Optional[Callable] = None):
+    def start(
+        self,
+        on_reading: Optional[Callable] = None,
+        on_ready: Optional[Callable] = None,
+        on_raw_line: Optional[Callable[[str], None]] = None,
+    ):
         """Blocking loop: connect (waiting/retrying indefinitely), then
         demux + fuse forever. on_ready() fires once ALL tags in
         tag_precedence have reported at least once -- same "don't say
         we're live until every source has actually spoken" semantics as
-        SensorHub.start()."""
+        SensorHub.start().
+
+        on_raw_line(line), if given, fires for EVERY line read off the
+        serial port -- before tag/parse validation, and even for lines
+        that turn out to be unrecognized-tag or torn/corrupted. This is
+        deliberately unfiltered: on_reading only fires for lines that
+        parsed successfully, which is exactly the wrong view when you're
+        trying to answer "is ANY data arriving over the wire at all" --
+        e.g. during hardware bring-up, or debugging why a leg (ATMOS 22,
+        say) shows nothing in the dashboard. See framework.dashboard's
+        raw_log_queue for a UI that consumes this.
+        """
         self._stop_event.clear()
         ready_fired = False
 
@@ -252,6 +268,9 @@ class RadioLinkReader:
             line = raw.decode("ascii", errors="replace").strip()
             if not line:
                 continue
+
+            if on_raw_line is not None:
+                on_raw_line(line)
 
             try:
                 tag, row = self.parse_line(line)

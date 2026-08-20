@@ -14,6 +14,9 @@ from framework.insights import get_insights
 # How many readings to keep in memory for the live ring buffer
 RING_BUFFER_SIZE = 3600  # ~1 hour at 1 Hz
 
+# How many raw serial lines to keep in the debug log panel (see raw_log_queue)
+RAW_LOG_BUFFER_SIZE = 200
+
 # Columns we expect from the iMet-X4 (or, in a fused session, from
 # framework.multi_sensor.SensorHub combining it with an ATMOS 22 and/or a
 # Trisonica Mini -- see framework.atmos22_reader / framework.trisonica_reader)
@@ -111,6 +114,16 @@ class Dashboard:
         milliseconds (default 20000). Kept much slower than
         refresh_interval since each refresh is a real network call to an
         LLM provider — see framework.insights for caching details.
+    raw_log_queue : queue.Queue, optional
+        Thread-safe queue of raw serial-line strings, e.g. fed by
+        RadioLinkReader.start(on_raw_line=...) or any reader that exposes
+        the unparsed text it received. When provided, a "Raw Serial"
+        debug panel is shown with the most recent lines (including ones
+        that failed to parse) — useful for confirming data is actually
+        arriving over the wire before worrying about why it isn't
+        showing up as parsed readings (e.g. "nothing coming back" from an
+        ATMOS 22 leg: this panel shows whether ANY bytes are arriving at
+        all, which narrows the problem to wiring/firmware vs. parsing).
     """
 
     def __init__(
@@ -121,6 +134,7 @@ class Dashboard:
         port: int = 8050,
         refresh_interval: int = 1000,
         insights_interval: int = 20000,
+        raw_log_queue: Optional[queue.Queue] = None,
     ):
         if dataframe is None and data_queue is None:
             raise ValueError("Provide either dataframe= or data_queue=.")
@@ -134,6 +148,10 @@ class Dashboard:
 
         # Internal ring buffer for live mode
         self._buffer: deque = deque(maxlen=RING_BUFFER_SIZE)
+
+        # Raw serial debug log (optional — see raw_log_queue above)
+        self._raw_log_queue = raw_log_queue
+        self._raw_log_buffer: deque = deque(maxlen=RAW_LOG_BUFFER_SIZE)
 
         if dataframe is not None:
             self._validate_df(dataframe)
@@ -260,6 +278,9 @@ class Dashboard:
                     ),
                 ),
 
+                # Raw Serial debug log — only shown when raw_log_queue was provided
+                *([self._build_raw_log_panel()] if self._raw_log_queue is not None else []),
+
                 # Refresh triggers
                 dcc.Interval(
                     id="interval",
@@ -274,6 +295,29 @@ class Dashboard:
                     disabled=not self._live,
                 ),
             ],
+        )
+
+    def _build_raw_log_panel(self) -> html.Div:
+        """A scrolling monospace log of raw serial lines, newest at the
+        bottom — same 'is anything arriving at all' debug view you'd get
+        from Arduino IDE's Serial Monitor, but inside the dashboard so you
+        don't need a second tool/window open during hardware bring-up."""
+        return self._panel(
+            "Raw Serial",
+            html.Div(
+                id="raw-log-content",
+                children=[html.P("No serial data received yet.",
+                                  style={"margin": 0, "fontSize": "12px", "color": _COLORS["text_secondary"]})],
+                style={
+                    "fontFamily": "ui-monospace, 'SF Mono', Menlo, Consolas, monospace",
+                    "fontSize": "12px",
+                    "color": _COLORS["text_primary"],
+                    "maxHeight": "220px",
+                    "overflowY": "auto",
+                    "whiteSpace": "pre-wrap",
+                    "wordBreak": "break-all",
+                },
+            ),
         )
 
     @staticmethod
@@ -445,6 +489,22 @@ class Dashboard:
             df = pd.DataFrame(list(self._buffer)) if self._buffer else pd.DataFrame()
             result = get_insights(df)
             return self._render_insights(result)
+
+        if self._raw_log_queue is not None:
+            @self.app.callback(
+                Output("raw-log-content", "children"),
+                Input("interval", "n_intervals"),
+            )
+            def refresh_raw_log(_n):
+                while True:
+                    try:
+                        self._raw_log_buffer.append(self._raw_log_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                if not self._raw_log_buffer:
+                    return [html.P("No serial data received yet.",
+                                    style={"margin": 0, "fontSize": "12px", "color": _COLORS["text_secondary"]})]
+                return [html.Div(line) for line in self._raw_log_buffer]
 
     # ------------------------------------------------------------------ #
     #  Run                                                                 #

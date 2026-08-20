@@ -63,11 +63,16 @@ def main():
             from framework.dashboard import Dashboard
 
             data_queue = queue.Queue()
+            raw_log_queue = queue.Queue()
             reader.data_queue = data_queue
             import threading
-            t = threading.Thread(target=reader.start, kwargs={"on_reading": on_reading, "on_ready": on_ready}, daemon=True)
+            t = threading.Thread(
+                target=reader.start,
+                kwargs={"on_reading": on_reading, "on_ready": on_ready, "on_raw_line": raw_log_queue.put},
+                daemon=True,
+            )
             t.start()
-            Dashboard(data_queue=data_queue).run()
+            Dashboard(data_queue=data_queue, raw_log_queue=raw_log_queue).run()
         else:
             print("Waiting for the radio link… (Ctrl+C to stop)")
             reader.start(on_reading=on_reading, on_ready=on_ready)
